@@ -1,0 +1,334 @@
+using Microsoft.VisualBasic.FileIO;
+using System;
+using System.Windows.Forms;
+using System.Data;
+using System.Data.SqlClient;
+using System.Linq;
+
+namespace CSVUploader
+{
+    public partial class Form1 : Form
+    {
+        public Form1()
+        {
+            InitializeComponent();
+        }
+        static void InsertDataIntoSQLServerUsingSQLBulkCopy(DataTable csvFileData)
+        {
+            // Create a new SqlConnection object to connect to the SQL Server database.
+            using (SqlConnection dbConnection = new SqlConnection(@"Data Source=TOOLAP24\SQLEXPRESS;Initial Catalog=Captura;Integrated Security=True;"))
+            {
+                // Open the SqlConnection object.
+                dbConnection.Open();
+
+                // Create a new SqlBulkCopy object and pass the open SqlConnection object as a parameter.
+                using (SqlBulkCopy s = new SqlBulkCopy(dbConnection))
+                {
+                    // Set the destination table name in the SQL Server database.
+                    s.DestinationTableName = "Wireshark";
+
+                    // Iterate through each column in the DataTable.
+                    foreach (var column in csvFileData.Columns)
+                    {
+                        // Add a new ColumnMapping to the SqlBulkCopy object.
+                        // The source column name and the destination column name are both set to the name of the column.
+                        s.ColumnMappings.Add(column.ToString(), column.ToString());
+                    }
+
+                    // Copy the data from the DataTable to the destination table in the SQL Server database.
+                    s.WriteToServer(csvFileData);
+                }
+            }
+        }
+        public void button1_Click(object sender, EventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog
+            {
+                // Set the filter to only allow the selection of CSV files
+                Filter = "CSV files (*.csv)|*.csv",
+                // Set the title of the file dialog
+                Title = "Select a CSV file"
+            };
+            //Label informing a busy state
+            label1.Text = "Cargando";
+
+            if (openFileDialog.ShowDialog() == DialogResult.OK)
+            {
+                // Get the file name and extract the date and shift parts
+                string fileNameCSV = openFileDialog.FileName;
+                fileNameCSV = fileNameCSV.Substring(fileNameCSV.LastIndexOf('\\') + 1); // Extract the file name part
+                string dateC = fileNameCSV.Substring(10, 6);
+                string shiftC = fileNameCSV.Substring(17, 2);
+
+                // Get the full path of the selected file
+                string filePath = openFileDialog.FileName;
+
+                // Read all the lines of the CSV file
+                string[] lines = File.ReadAllLines(filePath);
+
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string[] elements = lines[i].Split(',');
+                    elements = AddDateShiftColumn(elements, dateC, shiftC); // Pass the dateC and shiftC parameters                        
+                    lines[i] = string.Join(",", elements);
+                }
+
+                // Generate a temporary file name and store it in the tempFilePath variable
+                string tempFilePath = Path.GetTempFileName();
+
+                // Resize the lines array to accommodate one more element
+                Array.Resize(ref lines, lines.Length + 1);
+
+                // Set the first element of the lines array to a header string
+                lines[0] = "MAC_Source,IP_Source,MAC_Destination,IP_Destination,Protocol,DNS,Length,DateC,Shift";
+
+                // Write all the lines in the lines array to the temporary file
+                File.WriteAllLines(tempFilePath, lines);
+
+                // Delete the existing file specified by filePath
+                File.Delete(filePath);
+
+                // Move the temporary file to the location specified by filePath
+                // This effectively replaces the old file with the new one
+                File.Move(tempFilePath, filePath);
+
+                DataTable csvData = new DataTable();
+                try
+                {
+                    // Create a TextFieldParser object to read the CSV file
+                    using (TextFieldParser csvReader = new TextFieldParser(openFileDialog.FileName))
+                    {
+                        // Set the delimiter used in the CSV file to a comma
+                        csvReader.SetDelimiters(new string[] { "," });
+
+                        // Indicate that fields in the CSV file may be enclosed in double quotes
+                        csvReader.HasFieldsEnclosedInQuotes = true;
+
+                        // Read the first line of the CSV file, which contains the column headers
+                        string[] colFields = csvReader.ReadFields();
+
+                        // Iterate over each column header in the CSV file
+                        foreach (string column in colFields)
+                        {
+                            // Create a new DataColumn object for the current column header
+                            DataColumn datecolumn = new DataColumn(column);
+
+                            // Allow null values in the current column
+                            datecolumn.AllowDBNull = true;
+
+                            // Add the current DataColumn object to the Columns collection of the csvData DataTable
+                            csvData.Columns.Add(datecolumn);
+                        }
+
+                        // Iterate over the remaining lines in the CSV file
+                        while (!csvReader.EndOfData)
+                        {
+                            // Read the fields in the current line of the CSV file
+                            string[] fieldData = csvReader.ReadFields();
+
+                            // Iterate over each field in the current line
+                            for (int i = 0; i < fieldData.Length; i++)
+                            {
+                                // If a field contains only a double quote character, replace it with a null value
+                                if (fieldData[i] == "")
+                                {
+                                    fieldData[i] = null;
+                                }
+                            }
+
+                            // Add the current line of the CSV file as a new row to the csvData DataTable
+                            csvData.Rows.Add(fieldData);
+                        }
+
+                        // Display a message indicating that the process is complete
+                        label1.Text = "Terminado";
+                    }
+                }
+                catch (Exception ex)
+                {
+                }
+                InsertDataIntoSQLServerUsingSQLBulkCopy(csvData);
+
+                //Change the CSV name as BK
+                string newFileName = filePath + "BK";
+
+                // Check if the file exists
+                if (File.Exists(newFileName))
+                {
+                    // If the file exists, delete it
+                    File.Delete(newFileName);
+                }
+                //Write the file with the new name
+                File.Move(filePath, newFileName);
+                //Delete the original file
+                File.Delete(filePath);
+            }
+
+            // This method takes in two string arrays, elements, dateC, and shiftC, and returns a new string array that includes the original elements array with two additional columns appended to the end: dateC and shiftC.
+            static string[] AddDateShiftColumn(string[] elements, string dateC, string shiftC)
+            {
+                // Get the length of the elements array
+                int length = elements.Length;
+
+                // Create a new string array with a length of length + 2
+                string[] newElements = new string[length + 2];
+
+                // Iterate over the elements array using a for loop
+                for (int i = 0; i < length; i++)
+                {
+                    // Assign the value of the current element in the elements array to the corresponding index in the newElements array
+                    newElements[i] = elements[i];
+                }
+
+                // Assign the values of dateC and shiftC to the last two indices of the newElements array
+                newElements[length] = dateC;
+                newElements[length + 1] = shiftC;
+
+                // Return the newElements array
+                return newElements;
+            }
+        }
+        private void button2_Click(object sender, EventArgs e)
+        {
+            // Ask the user if they are sure they want to truncate the table
+            DialogResult result = MessageBox.Show("¿Esta seguro que desea borrar todo el contenido de la base de datos?", "Advertencia", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+
+            // If the user clicked "Yes", proceed with truncating the table
+            if (result == DialogResult.Yes)
+            {
+                // Create a new SQL command
+                SqlCommand command = new SqlCommand();
+                command.CommandText = "truncate table [dbo].[Wireshark]";
+
+                // Create a new SQL connection
+                SqlConnection connection = new SqlConnection();
+
+                //@"Data Source=TOOLAP24\SQLEXPRESS;Initial Catalog=Captura;Integrated Security=True;"
+
+                connection.ConnectionString = @"Data Source=TOOLAP24\SQLEXPRESS;Initial Catalog=Captura;Integrated Security=True;";
+
+                // Create a new SQL command and associate it with the connection
+                SqlCommand sqlCommand = new SqlCommand(command.CommandText, connection);
+
+                // Open the connection
+                connection.Open();
+
+                // Execute the command
+                sqlCommand.ExecuteNonQuery();
+
+                // Close the connection
+                connection.Close();
+
+                // Show a message box to indicate that the table has been truncated
+                MessageBox.Show("La base de datos ha sido limpiada", "Exito", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+
+        }
+
+        public class DataItem
+        {
+            public string QueryCellData { get; set; }
+            public int Count { get; set; }
+            public string TotalLength { get; set; }
+        }
+
+        private void buttonQuery_Click(object sender, EventArgs e)
+        {
+            string queryConnection = @"Data Source=TOOLAP24\SQLEXPRESS;Initial Catalog=Captura;Integrated Security=True;";
+            string colSelCombo = comboBoxColumn.SelectedItem.ToString();
+
+            string query = "SELECT TOP " + comboBoxTop.SelectedItem.ToString() + " " + comboBoxColumn.SelectedItem.ToString() + ", COUNT(*) as count, CAST(SUM(length) AS FLOAT) / 1024 / 1024 as totalLength FROM [dbo].[Wireshark] WHERE Shift " + comboBoxShift.SelectedItem.ToString() + " GROUP BY " + comboBoxColumn.SelectedItem.ToString() + " WITH ROLLUP HAVING " + comboBoxColumn.SelectedItem.ToString() + @" IS NOT NULL ORDER BY count DESC";
+
+            using (SqlConnection connection = new SqlConnection(queryConnection))
+            {
+                SqlCommand command = new SqlCommand(query, connection);
+                connection.Open();
+                SqlDataReader reader = command.ExecuteReader();
+
+                List<DataItem> data = new List<DataItem>();
+
+                while (reader.Read())
+                {
+                    string cellRes = reader[colSelCombo].ToString();
+                    int count = reader.GetInt32(1);
+                    double totalLength = reader.GetDouble(2);
+                    
+                    DataItem item = new DataItem { QueryCellData = cellRes, Count = count, TotalLength = totalLength.ToString("0.00") };
+
+                    data.Add(item);
+                }
+
+                dataGridViewQuery.DataSource = data;
+
+                dataGridViewQuery.Columns["QueryCellData"].HeaderText = colSelCombo;
+                dataGridViewQuery.Columns["Count"].HeaderText = "Conteo";
+                dataGridViewQuery.Columns["TotalLength"].HeaderText = "MB utilizados";
+
+                reader.Close();
+                connection.Close();
+            }
+        }
+
+
+        public void ExportToCSV(DataGridView dgv, string filename)
+        {
+            string delimiter = ",";
+
+            // Create a new list to store the values of each cell in the DataGridView
+            List<string> cells = new List<string>();
+
+            // Loop through each column in the DataGridView
+            foreach (DataGridViewColumn column in dgv.Columns)
+            {
+                // Add the header text of the column to the list, with the delimiter appended
+                cells.Add(column.HeaderText + delimiter);
+            }
+
+            // Remove the delimiter from the end of the last cell in the row
+            cells[cells.Count - 1] = cells[cells.Count - 1].Remove(cells[cells.Count - 1].Length - delimiter.Length);
+
+            // Join the list of cells into a single string, with the delimiter between each cell
+            string rowValues = string.Join(delimiter, cells);
+
+            // Write the row values to the CSV file
+            System.IO.File.AppendAllText(filename, rowValues + Environment.NewLine);
+
+            // Clear the list of cells for the next row
+            cells.Clear();
+
+            // Loop through each row in the DataGridView
+            foreach (DataGridViewRow row in dgv.Rows)
+            {
+                // Loop through each cell in the row
+                foreach (DataGridViewCell cell in row.Cells)
+                {
+                    // Add the value of the cell to the list, with the delimiter appended
+                    cells.Add(cell.Value + delimiter);
+                }
+
+                // Remove the delimiter from the end of the last cell in the row
+                cells[cells.Count - 1] = cells[cells.Count - 1].Remove(cells[cells.Count - 1].Length - delimiter.Length);
+
+                // Join the list of cells into a single string, with the delimiter between each cell
+                rowValues = string.Join(delimiter, cells);
+
+                // Write the row values to the CSV file
+                System.IO.File.AppendAllText(filename, rowValues + Environment.NewLine);
+
+                // Clear the list of cells for the next row
+                cells.Clear();
+            }
+        }
+
+        private void buttonToCSV_Click_1(object sender, EventArgs e)
+        {
+            SaveFileDialog sfd = new SaveFileDialog();
+            sfd.Filter = "CSV Files (*.csv)|*.csv|All Files (*.*)|*.*";
+            sfd.FileName = "DataGridViewExport.csv";
+            if (sfd.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            {
+                ExportToCSV(dataGridViewQuery, sfd.FileName);
+            }
+        }
+    }
+}
